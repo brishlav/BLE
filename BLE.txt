@@ -1,0 +1,117 @@
+#include <NimBLEDevice.h>
+
+// Define the BLE characteristics
+BLEServer* pServer = NULL;
+BLECharacteristic* pCharacteristicNotify = NULL;
+BLECharacteristic* pCharacteristicWrite = NULL;
+
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+uint32_t sampleRate = 2000; // 2000 samples per second
+uint32_t sampleInterval = 1000000 / sampleRate; // Sample interval in microseconds
+
+const int numSensors = 30; // Number of sensors
+
+// Callback class for server events
+class MyServerCallbacks: public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* pServer) {
+    deviceConnected = true;
+  }
+
+  void onDisconnect(NimBLEServer* pServer) {
+    deviceConnected = false;
+  }
+};
+
+// Callback class for characteristic write events
+class MyCharacteristicCallbacks: public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    if (value.length() == sizeof(float) * numSensors) {
+      float receivedValues[numSensors];
+      memcpy(receivedValues, value.data(), sizeof(float) * numSensors);
+      Serial.println("Received data:");
+      for (int i = 0; i < numSensors; i++) {
+        Serial.println(receivedValues[i]);
+      }
+    } else {
+      Serial.println("Received data size mismatch");
+    }
+  }
+};
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize the BLE device
+  NimBLEDevice::init("ESP32_BLE");
+  pServer = NimBLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE service and characteristics
+  BLEService* pService = pServer->createService("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
+
+  pCharacteristicNotify = pService->createCharacteristic(
+                            "beb5483e-36e1-4688-b7f5-ea07361b26a8",
+                            NIMBLE_PROPERTY::NOTIFY
+                          );
+
+  pCharacteristicWrite = pService->createCharacteristic(
+                           "d773d2df-9a8f-4f28-aeff-2e145a0a8a0a",
+                           NIMBLE_PROPERTY::WRITE
+                         );
+
+  pCharacteristicWrite->setCallbacks(new MyCharacteristicCallbacks());
+
+  pService->start();
+
+  // Start advertising
+  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(pService->getUUID());
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  NimBLEDevice::startAdvertising();
+  Serial.println("Waiting for a client connection to notify...");
+}
+
+void loop() {
+  static unsigned long lastSampleTime = 0;
+  if (micros() - lastSampleTime >= sampleInterval) {
+    lastSampleTime = micros();
+
+    if (deviceConnected) {
+      // Generate dummy data for 30 sensors
+      float sensorData[numSensors];
+      for (int i = 0; i < numSensors; i++) {
+        sensorData[i] = random(0, 1024) / 1.0f;
+      }
+
+      // Convert the sensor data to a byte array
+      uint8_t data[sizeof(float) * numSensors];
+      memcpy(data, sensorData, sizeof(float) * numSensors);
+
+      // Notify the client with the sensor data
+      pCharacteristicNotify->setValue(data, sizeof(float) * numSensors);
+      pCharacteristicNotify->notify();
+
+      // Optionally, print the sensor data to the Serial Monitor
+      Serial.println("Sending sensor data:");
+      for (int i = 0; i < numSensors; i++) {
+        Serial.println(sensorData[i]);
+      }
+    }
+  }
+
+  // Disconnecting
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500); // give the bluetooth stack the chance to get things ready
+    pServer->startAdvertising(); // restart advertising
+    Serial.println("start advertising");
+    oldDeviceConnected = deviceConnected;
+  }
+  // Connecting
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
+  }
+}
